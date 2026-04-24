@@ -10,4 +10,3 @@ The config can be generated as a .csv file through excel. Each line will output 
 - full_core: if this is selected the spatial distribution of the feature will be visualized across the full core, where each cell will be represented by a dot colored 
 - crops: if this is selected, the spatial distribution of the feature will be visualized across a small subset of the data, where each cell will be represented by its segmented polygon. IF images of the crop for all available stains will be provided by default
 - xmin/xmax/ymin/ymax: If crops was specified as Y, the user must define a region to visualize. Crop coordinates can be sourced from the xenium ranger and must be in microns (not pixels). Crops must be square and shouldn’t exceed 400 x 400 microns for best visualizations
-<img width="1972" height="384" alt="image" src="https://github.com/user-attachments/assets/02bdf313-1893-487c-8956-7a1cbbb20ae5" />
