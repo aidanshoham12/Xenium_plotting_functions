@@ -1,0 +1,3 @@
+﻿sample_name,tma_name,feature,full_core,crops,xmin,xmax,ymin,ymax
+sample_name_1,tma1,PDGFRA;CLDN5;PDGFRB,Y,,,,,
+sample_name_2,tma2,PDGFRA;CD68;CLDN5,,Y,2150,2350,18500,18700

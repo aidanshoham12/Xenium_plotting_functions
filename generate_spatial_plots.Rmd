@@ -1,0 +1,414 @@
+---
+title: "Plot xenium core spatial expression"
+author: "User"
+date: "`r Sys.Date()`"
+params:
+  data_path: ""
+  out_path: ""
+  config_path: ""
+output: 
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 2
+    number_sections: true
+    theme: flatly
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Document contents
+The objective of this document is to plot spatial expression in data from the G34 project processed with Xenium.
+
+# Extract parameters and read config
+In this section we extract the paths to the data and desired output directories and the config.
+```{r}
+# Get paths passed from SLURM
+data_path    <- params$data_path
+out_path  <- params$out_path
+config_path <- params$config_path
+
+config <- read.csv(config_path)
+```
+
+
+# Load libraries
+```{r}
+library(dplyr)
+library(Seurat)
+library(tibble)
+library(ggplot2)
+library(colorRamp2)
+library(RColorBrewer)
+library(cowplot)
+library(arrow)
+library(stringr)
+library(readr)
+library(purrr)
+library(here)
+library(glue)
+library(terra)
+library(patchwork)
+library(scales)
+```
+
+
+# Generate plots
+In this section, we generate the plots for each row in the config. This is done through a for loop that extracts the following information for each query:
+
+- Sample name
+- TMA name
+- Features to visualize (either genes or meta data columns)
+- Visualization coordinates (either full core or crop)
+- Normalization (either raw or log normalized counts)
+
+If the user wants to visualize the feature across the full core, the spatial plot will be generated showing the locations of cells (depicted as points) colored by the intensity of the feature being visualized. If the user wants to visualize a crop, the coordinates of the crop provided will be used to show the spatial distribution of a spatial subset of the data, where the cells will be represented by their segmentation polygons. For crops, the IF images with and without the segmentation boundaries will be provided by default.
+```{r}
+
+# Loop through all rows of the config and extract meta data
+for (i in 1:nrow(config)) {
+  # Extract row in config being processed
+  row <- config %>% filter(row_number() == i)
+  
+  # Extract parameters
+  sample_name <- row %>% pull(sample_name)
+  tma_name <- row %>% pull(tma_name)
+  features <- row %>% pull(feature) %>% str_split(";") %>% .[[1]] %>% trimws()
+  full_core <- row %>% pull(full_core)
+  crops <- row %>% pull(crops)
+  xmin <- row %>% pull(xmin)
+  xmax <- row %>% pull(xmax)
+  ymin <- row %>% pull(ymin)
+  ymax <- row %>% pull(ymax)
+  
+  # Create path to save outputs
+  save_path <- glue("{out_path}/{tma_name}/{sample_name}")
+  dir.create(save_path, recursive = T)
+  
+  # Get data
+  seurat <- readRDS(glue("{data_path}/seurat_objects/{tma_name}/{sample_name}.rds"))
+  
+  # Generate plots for the full core
+  if (full_core == "Y") {
+  plots <- list()
+    
+    for (f in features) {
+      current_f <- f 
+      
+      # If feature is a gene then extract raw counts
+      if (f %in% rownames(seurat)) {
+        # Extract raw counts
+        exp <- FetchData(object = seurat, vars = f, layer = "counts")
+        f_to_plot <- paste0(f, "_raw_full") # Unique name
+        colnames(exp) <- f_to_plot
+        seurat <- AddMetaData(object = seurat, metadata = exp)
+        
+        # Visualize expression
+        p <- ggplot(seurat@meta.data, aes(x = x, y = y, color = .data[[f_to_plot]])) +
+        ggrastr::geom_point_rast(size = 0.08, raster.dpi = 300) +
+        scale_color_distiller(palette = "Blues", 
+                              direction = 1, 
+                              limits = c(0, 
+                                         quantile(seurat@meta.data[[f_to_plot]], 0.99, na.rm = TRUE)), 
+                              oob = scales::squish) +
+        coord_fixed() + 
+        theme(
+          aspect.ratio = 1,
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom",
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          panel.background = element_blank(),
+          panel.grid = element_blank(),
+          plot.title = element_text(hjust = 0.5)
+        ) +
+        ggtitle(sample_name) + labs(color = paste0(current_f, " expression"))
+        
+        plots[[f]] <- p
+        
+      } else {
+        f_to_plot <- f # For clusters/categorical metadata
+      }
+    }
+  
+    # Get plots for QC metrics
+  p_counts <- ggplot(seurat@meta.data, aes(x = x, y = y, color = .data[["nCount_Xenium"]])) +
+        ggrastr::geom_point_rast(size = 0.08, raster.dpi = 300) +
+        scale_color_distiller(palette = "Blues", 
+                              direction = 1, 
+                              limits = c(0, 
+                                         quantile(seurat@meta.data[["nCount_Xenium"]], 0.99, na.rm = TRUE)), 
+                              oob = scales::squish) +
+        coord_fixed() + 
+        theme(
+          aspect.ratio = 1,
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom",
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          panel.background = element_blank(),
+          panel.grid = element_blank(),
+          plot.title = element_text(hjust = 0.5)
+        ) +
+        ggtitle(sample_name) + labs(color = "UMIs/cell")
+  
+  p_features <- ggplot(seurat@meta.data, aes(x = x, y = y, color = .data[["nFeature_Xenium"]])) +
+        ggrastr::geom_point_rast(size = 0.08, raster.dpi = 300) +
+        scale_color_distiller(palette = "Blues", 
+                              direction = 1, 
+                              limits = c(0, 
+                                         quantile(seurat@meta.data[["nFeature_Xenium"]], 0.99, na.rm = TRUE)), 
+                              oob = scales::squish) +
+        coord_fixed() + 
+        theme(
+          aspect.ratio = 1,
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          legend.position = "bottom",
+          axis.title = element_blank(),
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          panel.background = element_blank(),
+          panel.grid = element_blank(),
+          plot.title = element_text(hjust = 0.5)
+        ) +
+        ggtitle(sample_name) + labs(color = "genes/cell")
+  
+    # Save plots as a pdf
+    pdf(file = glue("{save_path}/full_core_visualizations_{i}.pdf"))
+    for (f_name in names(plots)) {
+      p <- plots[[f_name]]
+      print(p)
+    }
+    print(p_counts)
+    print(p_features)
+    dev.off()
+  }
+  
+  # Generate plots for crops
+  if (crops == "Y") {
+    # Initialize empty list for plots
+    feature_plots <- list()
+    
+    # Load polygons
+    polygons <- read_parquet(glue("{data_path}/polygons/{tma_name}/cell_boundaries.parquet"))
+    
+    # Loop through vector of features
+    for (f in features) {
+      current_f <- f # Keep the original name for labeling plot
+      
+      # If feature is a gene, extract counts 
+      if (f %in% rownames(seurat)) {
+        # Pull raw counts from counts slot
+        exp <- FetchData(object = seurat, vars = f, layer = "counts")
+        colnames(exp) <- paste0(f, "_raw_plot")
+        seurat <- AddMetaData(object = seurat, metadata = exp)
+        f_to_plot <- paste0(f, "_raw_plot")
+        
+        # Generate plot
+        p <- polygons %>%
+        filter(vertex_x > xmin & vertex_x < xmax & vertex_y > ymin & vertex_y < ymax) %>%
+        left_join(seurat@meta.data %>% 
+                  select(all_of(f_to_plot)) %>% 
+                  mutate(cell_id = rownames(.)), by = "cell_id") %>% 
+        ggplot(mapping = aes(x = vertex_x, y = vertex_y, group = cell_id)) +
+        geom_polygon(aes(fill = .data[[f_to_plot]]), 
+                     colour = "black", 
+                     linewidth = 0.1) +
+        scale_fill_viridis_c(
+          option = "magma", 
+          direction = 1, 
+          limits = c(0, quantile(seurat@meta.data[[f_to_plot]], 0.99, na.rm = TRUE)), 
+          oob = scales::squish,
+          na.value = "grey90") +
+        coord_fixed() + 
+        theme_void() +
+        theme(
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          plot.title = element_text(hjust = 0.5, size = 24),
+          legend.position = "bottom") + 
+        ggtitle(sample_name) + labs(fill = paste0(current_f, " expression"))
+      
+      feature_plots[[f]] <- p
+      
+      } else {
+        f_to_plot <- f # For any other meta data
+      }
+    }
+    
+       # Get plots for QC metrics
+  p_counts <- polygons %>%
+        filter(vertex_x > xmin & vertex_x < xmax & vertex_y > ymin & vertex_y < ymax) %>%
+        left_join(seurat@meta.data %>% 
+                  select(all_of("nCount_Xenium")) %>% 
+                  mutate(cell_id = rownames(.)), by = "cell_id") %>% 
+        ggplot(mapping = aes(x = vertex_x, y = vertex_y, group = cell_id)) +
+        geom_polygon(aes(fill = .data[["nCount_Xenium"]]), 
+                     colour = "black", 
+                     linewidth = 0.1) +
+        scale_fill_viridis_c(
+          option = "magma", 
+          direction = 1, 
+          limits = c(0, quantile(seurat@meta.data[["nCount_Xenium"]], 0.99, na.rm = TRUE)), 
+          oob = scales::squish,
+          na.value = "grey90") +
+        coord_fixed() + 
+        theme_void() +
+        theme(
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          plot.title = element_text(hjust = 0.5, size = 24),
+          legend.position = "bottom") + 
+        ggtitle(sample_name) + labs(fill = "UMIs/cell")
+  
+  p_features <- polygons %>%
+        filter(vertex_x > xmin & vertex_x < xmax & vertex_y > ymin & vertex_y < ymax) %>%
+        left_join(seurat@meta.data %>% 
+                  select(all_of("nFeature_Xenium")) %>% 
+                  mutate(cell_id = rownames(.)), by = "cell_id") %>% 
+        ggplot(mapping = aes(x = vertex_x, y = vertex_y, group = cell_id)) +
+        geom_polygon(aes(fill = .data[["nFeature_Xenium"]]), 
+                     colour = "black", 
+                     linewidth = 0.1) +
+        scale_fill_viridis_c(
+          option = "magma", 
+          direction = 1, 
+          limits = c(0, quantile(seurat@meta.data[["nFeature_Xenium"]], 0.99, na.rm = TRUE)), 
+          oob = scales::squish,
+          na.value = "grey90") +
+        coord_fixed() + 
+        theme_void() +
+        theme(
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          plot.title = element_text(hjust = 0.5, size = 24),
+          legend.position = "bottom") + 
+        ggtitle(sample_name) + labs(fill = "genes/cell")
+    
+    
+    # Define function for extracting xenium images
+    GetXeniumImage <- function(xmin, xmax, ymin, ymax, path_8bit, brighten = 1) {
+      # Load image
+      img <- terra::rast(path_8bit)
+      
+      # Transform micron to pixel coords
+      res_um <- 0.2125
+      img_width_um <- ncol(img) * res_um
+      img_height_um <- nrow(img) * res_um
+      terra::ext(img) <- c(0, img_width_um, 0, img_height_um)
+      
+      # 3. Safety Check: Ensure requested coordinates are within the image bounds
+      # This prevents the "crop" function from returning an empty object
+      xmin <- max(0, xmin)
+      ymin <- max(0, ymin)
+      xmax <- min(img_width_um, xmax)
+      ymax <- min(img_height_um, ymax)
+      
+      if (xmin >= xmax || ymin >= ymax) {
+        warning(paste("Invalid crop coordinates for", path_8bit, "- returning empty dataframe"))
+        return(data.frame(x=numeric(), y=numeric(), intensity=numeric()))
+      }
+      
+      # Define and extract crop
+      e <- terra::ext(c(xmin, xmax, ymin, ymax))
+      img_subset <- terra::crop(img, e)
+      
+      # Convert crop to data frame
+      img_subset_df <- as.data.frame(img_subset, xy = TRUE)
+      
+      # Set column names
+      colnames(img_subset_df) <- c("x", "y", "intensity")
+      
+      # Apply brightness for dim stains
+      if (brighten != 1) {
+        img_subset_df$intensity <- img_subset_df$intensity * brighten
+        img_subset_df$intensity[img_subset_df$intensity > 255] <- 255
+      }
+      
+      return(img_subset_df)
+    }
+
+    # Generate list of parameters for the IF plots
+    stain_settings <- list(
+      DAPI = list(img = "ch0000_dapi.tif", color = "#ade8f4", bright = 1.5),
+      ATP_CD45_ECad = list(img = "ch0001_atp1a1_cd45_e-cadherin.tif", color = "#FF00FF", bright = 3),
+      RNA18S = list(img = "ch0002_18s.tif", color = "#fb8500", bright = 3.5),
+      aSMA_Vim = list(img = "ch0003_alphasma_vimentin.tif", color = "#00ff2b", bright = 2))
+    
+    # Define function to generate plots
+    PlotIFStains <- function(stain_name, stain_params, add_polygons = FALSE) {
+      
+      # Load image 
+      img <- GetXeniumImage(
+        xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, 
+        path_8bit = glue("{data_path}/images/{tma_name}/{stain_params$img}"), 
+        brighten = stain_params$bright
+      ) %>%
+        filter(x > xmin & x < xmax & y > ymin & y < ymax)
+    
+      # Get base plot
+      p <- ggplot() +
+        geom_raster(data = img, aes(x = x, y = y, fill = intensity)) +
+        scale_fill_gradient(low = "black", high = stain_params$color, guide = "none") +
+        coord_fixed(expand = FALSE) +
+        theme_void() + 
+        theme(
+          panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 1),
+          plot.title = element_text(hjust = 0.5, size = 24)
+        ) +
+        labs(title = stain_name)
+    
+      if (add_polygons) {
+        p <- p + geom_polygon(
+          data = polygons %>% filter(vertex_x > xmin & vertex_x < xmax & vertex_y > ymin & vertex_y < ymax), 
+          aes(x = vertex_x, y = vertex_y, group = cell_id),
+          fill = NA, colour = "yellow", linewidth = 0.2, alpha = 0.8
+        )
+      }
+      
+      return(p)
+    }
+    
+    # Get stain plots with and without polygons
+    stain_plots <- lapply(names(stain_settings), function(n) {
+      PlotIFStains(stain_name = n, stain_params = stain_settings[[n]])
+    })
+    
+    stain_polygons_plots <- lapply(names(stain_settings), function(n) {
+      PlotIFStains(stain_name = n, stain_params = stain_settings[[n]], add_polygons = TRUE)
+    })
+    
+    # Save plots as pdf
+    pdf(file = glue("{save_path}/crop_visualizations_{i}.pdf"))
+
+    # Use the list dedicated to the CROPPED ggplot objects
+    for (f_name in names(feature_plots)) {  
+      p <- feature_plots[[f_name]]
+      print(p)
+    }
+    
+    print(p_counts)
+    print(p_features)
+
+    # Save IF stains
+    print(plot_grid(plotlist = stain_polygons_plots, nrow = 2, ncol = 2, align = "hv"))
+    print(plot_grid(plotlist = stain_plots, nrow = 2, ncol = 2, align = "hv"))
+
+    dev.off()
+  }
+}
+
+
+```
+
+
+# Reproducibility
+```{r}
+sessionInfo()
+```
+
